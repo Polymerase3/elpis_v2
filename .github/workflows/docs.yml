@@ -1,13 +1,14 @@
-name: Build & Deploy Documentation
+name: docs
 
-# Allow the workflow to push to this repo
+# Needed scopes for the Pages actions
 permissions:
-  contents: write
+  contents: read          # checkout
+  pages: write            # upload & deploy
+  id-token: write         # auth to Pages
 
 on:
   push:
-    paths:
-      - "elpis_documentation/**"
+    paths: [ "elpis_documentation/**" ]
   workflow_dispatch:
 
 concurrency:
@@ -15,49 +16,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-publish:
+  build-deploy:
     runs-on: ubuntu-latest
 
     steps:
-      # 1) Check out code with write-permission token
-      - uses: actions/checkout@v4
-        with:
-          # Fetch the full history so ghp-import or manual pushes work
-          fetch-depth: 0
-          # Use the GITHUB_TOKEN for both read AND write
-          token: ${{ secrets.GITHUB_TOKEN }}
+    # 1) Checkout
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
-      # 2) Setup Python
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+    # 2) Setup Python
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
 
-      # 3) Install Jupyter-Book
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install jupyter-book
+    # 3) Build the Jupyter-Book
+    - name: Build book
+      run: |
+        pip install -q jupyter-book
+        cd elpis_documentation
+        jupyter-book build . --all
 
-      # 4) Build the Jupyter Book
-      - name: Build the Book
-        run: |
-          cd elpis_documentation
-          jupyter-book build . --all
+    # 4) Upload the generated HTML as a Pages artifact
+    - name: Upload artifact
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: elpis_documentation/_build/html
 
-      # 5) Publish to gh-pages
-      - name: Publish to gh-pages
-        run: |
-          cd elpis_documentation/_build/html
-
-          # Initialize a fresh git history in this folder
-          git init -b gh-pages
-          git config user.name "github-actions[bot]"
-          git config user.email "actions@github.com"
-
-          git add .
-          git commit -m "Publish docs: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-
-          # Push using the token-authenticated remote
-          git push --force \
-            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
-            gh-pages
+    # 5) Deploy to GitHub Pages
+    - name: Deploy to Pages
+      id: deployment
+      uses: actions/deploy-pages@v4
