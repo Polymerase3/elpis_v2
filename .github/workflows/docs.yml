@@ -1,6 +1,6 @@
 name: Build & Deploy Documentation
 
-# Grant push rights to GITHUB_TOKEN
+# Allow the workflow to push to this repo
 permissions:
   contents: write
 
@@ -19,30 +19,45 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1) Check out code with write-permission token
       - uses: actions/checkout@v4
+        with:
+          # Fetch the full history so ghp-import or manual pushes work
+          fetch-depth: 0
+          # Use the GITHUB_TOKEN for both read AND write
+          token: ${{ secrets.GITHUB_TOKEN }}
 
+      # 2) Setup Python
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
+      # 3) Install Jupyter-Book
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install jupyter-book
 
-      - name: Build the Jupyter Book
+      # 4) Build the Jupyter Book
+      - name: Build the Book
         run: |
           cd elpis_documentation
           jupyter-book build . --all
 
+      # 5) Publish to gh-pages
       - name: Publish to gh-pages
         run: |
           cd elpis_documentation/_build/html
+
+          # Initialize a fresh git history in this folder
           git init -b gh-pages
           git config user.name "github-actions[bot]"
           git config user.email "actions@github.com"
+
           git add .
           git commit -m "Publish docs: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+          # Push using the token-authenticated remote
           git push --force \
             "https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
             gh-pages
