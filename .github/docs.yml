@@ -3,9 +3,12 @@ name: Build & Deploy Documentation
 # Trigger when docs change, or manually via the Actions tab
 on:
   push:
-    paths:
-      - "elpis_documentation/**"
+    paths: [ "elpis_documentation/**" ]
   workflow_dispatch:
+
+  concurrency:
+  group: docs-build   # any name
+  cancel-in-progress: true
 
 jobs:
   build-and-publish:
