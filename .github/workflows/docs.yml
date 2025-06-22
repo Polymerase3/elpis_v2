@@ -1,49 +1,63 @@
-name: docs
-
-# Needed scopes for the Pages actions
-permissions:
-  contents: read          # checkout
-  pages: write            # upload & deploy
-  id-token: write         # auth to Pages
+# Simple workflow for deploying static content to GitHub Pages
+name: Deploy Documentation to Pages
 
 on:
+  # Runs on pushes targeting the default branch
   push:
     paths: [ "elpis_documentation/**" ]
+
+  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
+# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
+# However, do NOT cancel in-progress runs as we want to allow these production deployments to complete.
 concurrency:
-  group: docs-build
+  group: "pages"
   cancel-in-progress: true
 
+
 jobs:
-  build-deploy:
+  # ─────────────────────────────────────────────────────────── build ──
+  build:
     runs-on: ubuntu-latest
 
     steps:
-    # 1) Checkout
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    # 2) Setup Python
-    - uses: actions/setup-python@v5
-      with:
-        python-version: "3.11"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-    # 3) Build the Jupyter-Book
-    - name: Build book
-      run: |
-        pip install -q jupyter-book
-        cd elpis_documentation
-        jupyter-book build . --all
+      - name: Build Jupyter-Book
+        run: |
+          python -m pip install -q --upgrade pip jupyter-book
+          cd elpis_documentation
+          jupyter-book build . --all
 
-    # 4) Upload the generated HTML as a Pages artifact
-    - name: Upload artifact
-      uses: actions/upload-pages-artifact@v3
-      with:
-        path: elpis_documentation/_build/html
+      - name: Upload artifact for Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: elpis_documentation/_build/html   # directory to publish
 
-    # 5) Deploy to GitHub Pages
-    - name: Deploy to Pages
-      id: deployment
-      uses: actions/deploy-pages@v4
+  # ──────────────────────────────────────────────────────── deploy ──
+  deploy:
+    needs: build               # wait for build job
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
