@@ -34,6 +34,15 @@ jobs:
 
       - name: Publish to GitHub Pages
         run: |
-          ghp-import -n -p -f elpis_documentation/_build/html
+          cd elpis_documentation/_build/html
+          git init -b gh-pages
+          git config user.name "github-actions[bot]"
+          git config user.email "actions@github.com"
+          git add .
+          git commit -m "Publish docs: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          # Push to gh-pages branch via the token-authenticated URL
+          git push --force \
+            "https://${GITHUB_ACTOR}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
+            gh-pages
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
