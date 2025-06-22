@@ -1,13 +1,14 @@
 name: Build & Deploy Documentation
 
-# Trigger when docs change, or manually via the Actions tab
 on:
   push:
-    paths: [ "elpis_documentation/**" ]
+    paths:
+      - "elpis_documentation/**"
   workflow_dispatch:
 
-  concurrency:
-  group: docs-build   # any name
+# Concurrency prevents multiple queued runs from piling up
+concurrency:
+  group: docs-build
   cancel-in-progress: true
 
 jobs:
@@ -15,32 +16,24 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1) Check out code
       - uses: actions/checkout@v4
 
-      # 2) Setup Python
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
-      # 3) Install Jupyter-Book and ghp-import
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install jupyter-book ghp-import
 
-      # 4) Build the book into static HTML
       - name: Build the Jupyter Book
         run: |
           cd elpis_documentation
           jupyter-book build . --all
 
-      # 5) Publish to gh-pages branch
       - name: Publish to GitHub Pages
         run: |
-          # -n: add .nojekyll
-          # -p: push to gh-pages using GITHUB_TOKEN
-          # -f: force update the branch
           ghp-import -n -p -f elpis_documentation/_build/html
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
