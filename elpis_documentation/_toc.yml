@@ -4,5 +4,5 @@
 format: jb-book
 root: intro
 chapters:
-- file: docs/setting_conda
+- file: chapters/setting_conda
 
