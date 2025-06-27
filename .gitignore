@@ -252,3 +252,5 @@ __marimo__/
 
 # SQL
 data/
+.vscode
+.env
