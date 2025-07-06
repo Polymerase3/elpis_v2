@@ -22,6 +22,12 @@ jobs:
           environment-file: environment_setup.yml
           activate-environment: elpis
 
+      # 1.1) Install my package
+      - name: Install your package
+        shell: bash -l {0}
+        run: |
+          pip install -e .
+
       # 2) (Re-)install test tools in that env
       - name: Install test & lint dependencies
         shell: bash -l {0}
