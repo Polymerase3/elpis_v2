@@ -10,6 +10,7 @@ dotenv_path = BASE_DIR / ".env"
 if dotenv_path.exists():
     load_dotenv(dotenv_path, override=True)
 
+
 class Config:
     """
     Simple config class that reads settings from environment variables.
@@ -40,6 +41,7 @@ class Config:
     # --- Logging & monitoring ----------------------------------------------
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     prometheus_port: int = int(os.getenv("PROMETHEUS_PORT", 8000))
+
 
 # Shared singleton
 settings = Config()

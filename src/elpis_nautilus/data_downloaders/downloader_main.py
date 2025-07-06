@@ -28,7 +28,7 @@ from urllib.parse import urljoin
 # ---------------------------------------------------------------------------
 # Centralised settings
 # ---------------------------------------------------------------------------
-from elpis_nautilus.utils.config import settings # noqa: E402  (import after stdlib)
+from elpis_nautilus.utils.config import settings
 
 ###############################################################################
 # Globals & logging
@@ -39,6 +39,7 @@ logger = logging.getLogger("data_download")
 # already configured logging.  This ensures logs are visible when the module is
 # used programmatically.
 
+
 def _ensure_logger() -> None:
     if not logger.handlers:
         handler = logging.StreamHandler()
@@ -47,15 +48,18 @@ def _ensure_logger() -> None:
         )
         logger.addHandler(handler)
     logger.setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))
-    # Prevent messages from propagating up to the root logger (avoids double‐logging)
+    # Prevent messages from propagating up to the root logger
+    # (avoids double‐logging)
     logger.propagate = False
+
 
 _ensure_logger()
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept":
+        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
 ###############################################################################
@@ -66,6 +70,7 @@ HISTDATA_BASE = "https://www.histdata.com/download-free-forex-historical-data"
 ###############################################################################
 # Helper functions
 ###############################################################################
+
 
 def _ensure_tmp_dir() -> Path:
     tmp = settings.tmp_dir
@@ -81,7 +86,8 @@ def _ensure_tmp_dir() -> Path:
     return tmp
 
 
-def _year_month_range(start: datetime, end: datetime) -> Iterable[tuple[int, int]]:
+def _year_month_range(start: datetime,
+                      end: datetime) -> Iterable[tuple[int, int]]:
     cur = datetime(start.year, start.month, 1)
     end_marker = datetime(end.year, end.month, 1)
     while cur <= end_marker:
@@ -91,6 +97,7 @@ def _year_month_range(start: datetime, end: datetime) -> Iterable[tuple[int, int
 ###############################################################################
 # HistData workflow
 ###############################################################################
+
 
 _SESSION: requests.Session | None = None  # lazily initialised
 
@@ -104,7 +111,13 @@ def _session() -> requests.Session:
 
 
 def _histdata_page(symbol: str, year: int, month: int) -> str:
-    return f"{HISTDATA_BASE}?/ascii/tick-data-quotes/{symbol.lower()}/{year}/{month}"
+    return (
+        f"{HISTDATA_BASE}"
+        f"?/ascii/tick-data-quotes/"
+        f"{symbol.lower()}/"
+        f"{year}/"
+        f"{month}"
+    )
 
 
 def _extract_filename(content_disposition: str) -> str | None:
@@ -161,7 +174,8 @@ def _fetch_zip(symbol: str, year: int, month: int, dest: Path) -> Path | None:
         resp = downloader(form_action, **dl_args, timeout=60)
         resp.raise_for_status()
     except requests.RequestException as exc:
-        logger.error("Download failed for %s %04d/%02d – %s", symbol, year, month, exc)
+        logger.error("Download failed for %s %04d/%02d – %s",
+                     symbol, year, month, exc)
         return None
 
     ctype = resp.headers.get("Content-Type", "").lower()
@@ -207,8 +221,13 @@ def _extract_zip(zip_path: Path, dest: Path) -> None:
         except OSError as exc:
             logger.warning("Could not delete %s – %s", txt.name, exc)
 
-def download_histdata(symbol: str, start: datetime, end: datetime, dest: Path) -> None:
-    """Programmatic API: download HistData tick ZIPs and leave CSVs in *dest*."""
+
+def download_histdata(symbol: str,
+                      start: datetime,
+                      end: datetime,
+                      dest: Path) -> None:
+    """Programmatic API: download HistData tick
+    ZIPs and leave CSVs in *dest*."""
     logger.info(
         "Downloading %s %s → %s into %s",
         symbol,
@@ -226,8 +245,10 @@ def download_histdata(symbol: str, start: datetime, end: datetime, dest: Path) -
 # CLI entry
 ###############################################################################
 
+
 def _parse_cli() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Download market data from external providers")
+    p = argparse.ArgumentParser(
+        description="Download market data from external providers")
     p.add_argument("provider", choices=["histdata"], help="Data provider")
     p.add_argument("--symbol", required=True)
     p.add_argument("--from", dest="date_from", required=True, help="YYYY-MM")
@@ -239,7 +260,11 @@ def main() -> None:
     args = _parse_cli()
     tmp = _ensure_tmp_dir()
 
-    if input(f"Proceed with {args.symbol.upper()}? [y/N] ").strip().lower() not in {"y", "yes"}:
+    prompt = f"Proceed with {args.symbol.upper()}? [y/N] "
+    response = input(prompt)
+    normalized = response.strip().lower()
+
+    if normalized not in {"y", "yes"}:
         sys.exit("User aborted.")
 
     try:

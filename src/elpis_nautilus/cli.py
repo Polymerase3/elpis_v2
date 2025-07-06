@@ -7,10 +7,9 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Final, NamedTuple
+from typing import Final, NamedTuple
 from datetime import datetime, date
 from calendar import month_name
-from pathlib import Path
 
 import click
 from tabulate import tabulate
@@ -33,6 +32,7 @@ logging.basicConfig(
 _dl_logger  # noqa: F401
 LOGGER: Final = logging.getLogger("elpis.cli")
 
+
 class InstrumentInfo(NamedTuple):
     symbol: str
     date_from: datetime
@@ -43,7 +43,13 @@ class InstrumentInfo(NamedTuple):
 # HistData discovery
 ##################################################################
 
-_MONTH_MAP: Final[dict[str, int]] = {m: i for i, m in enumerate(month_name) if m}
+
+_MONTH_MAP: Final[dict[str, int]] = {
+    m: i
+    for i, m in enumerate(month_name)
+    if m
+}
+
 
 def _histdata_info() -> list[InstrumentInfo]:
     """Scrape HistData homepage for symbols and their start dates."""
@@ -52,10 +58,11 @@ def _histdata_info() -> list[InstrumentInfo]:
     resp = _session().get(list_url, timeout=20)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
-    
+
     print(list_url)
     infos: list[InstrumentInfo] = []
-    # Each instrument is in a <td> with an <a href> containing '/ascii/tick-data-quotes/'
+    # Each instrument is in a <td> with an <a href>
+    # containing '/ascii/tick-data-quotes/'
     for td in soup.find_all("td"):
         link = None
         for a in td.find_all("a", href=True):
@@ -95,27 +102,30 @@ def _histdata_info() -> list[InstrumentInfo]:
 # CLI setup
 ##################################################################
 
+
 @click.group(help="Elpis CLI.")
 @click.version_option(package_name="elpis_nautilus", prog_name="elpis")
 def cli() -> None:
     pass
 
+
 @cli.group(help="Download market data from providers.")
 def download() -> None:
     pass
+
 
 @download.command("histdata", help="Tick data from HistData.com")
 @click.option("--symbol", required=True, help="Market symbol, e.g. EURUSD")
 @click.option(
     "--from", "date_from",
     required=True,
-    callback=lambda _ctx,_param,val: datetime.strptime(val, "%Y-%m"),
+    callback=lambda _ctx, _param, val: datetime.strptime(val, "%Y-%m"),
     help="Start YYYY-MM",
 )
 @click.option(
     "--to", "date_to",
     required=True,
-    callback=lambda _ctx,_param,val: datetime.strptime(val, "%Y-%m"),
+    callback=lambda _ctx, _param, val: datetime.strptime(val, "%Y-%m"),
     help="End YYYY-MM",
 )
 def histdata_cmd(symbol: str, date_from: datetime, date_to: datetime) -> None:
@@ -128,11 +138,14 @@ def histdata_cmd(symbol: str, date_from: datetime, date_to: datetime) -> None:
     download_histdata(symbol.upper(), date_from, date_to, tmp)
     click.echo(f"Done – files in {tmp}")
 
+
 @cli.group(name="show-available", help="List instruments & date ranges.")
 def show_available() -> None:
     pass
 
-@show_available.command("histdata", help="Show available ticks from HistData.com")
+
+@show_available.command("histdata",
+                        help="Show available ticks from HistData.com")
 def show_histdata() -> None:
     click.echo("Fetching metadata from HistData.com…", err=True)
     infos = _histdata_info()
@@ -140,10 +153,16 @@ def show_histdata() -> None:
         click.echo("No instruments found.", err=True)
         raise SystemExit(1)
     rows = [
-        [inf.symbol, inf.date_from.strftime("%Y-%m"), inf.date_to.strftime("%Y-%m"), inf.interval]
+        [inf.symbol,
+         inf.date_from.strftime("%Y-%m"),
+         inf.date_to.strftime("%Y-%m"),
+         inf.interval]
         for inf in infos
     ]
-    click.echo(tabulate(rows, headers=["instrument","from","to","interval"], tablefmt="psql"))
+    click.echo(tabulate(rows,
+                        headers=["instrument", "from", "to", "interval"],
+                        tablefmt="psql"))
+
 
 if __name__ == "__main__":
     cli()
