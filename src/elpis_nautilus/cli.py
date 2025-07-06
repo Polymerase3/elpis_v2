@@ -40,7 +40,8 @@ class InstrumentInfo(NamedTuple):
         symbol (str): The instrument’s ticker or symbol (e.g., "EURUSD").
         date_from (datetime): The first date for which tick data is available.
         date_to (datetime): The last date for which tick data is available.
-        interval (str): The data interval or granularity (e.g., "tick", "1min").
+        interval (str): The data interval or granularity
+        (e.g., "tick", "1min").
     """
     symbol: str
     date_from: datetime
@@ -61,12 +62,15 @@ _MONTH_MAP: Final[dict[str, int]] = {
 
 def _histdata_info() -> list[InstrumentInfo]:
     """
-    Scrape HistData.com for all available tick‐data instruments and their date ranges.
+    Scrape HistData.com for all available tick‐data instruments and
+    their date ranges.
 
     Returns:
-        List[InstrumentInfo]: one entry per symbol with (symbol, date_from, date_to, "tick").
+        List[InstrumentInfo]: one entry per symbol with (symbol, date_from,
+        date_to, "tick").
     """
-    resp = _session().get(f"{HISTDATA_BASE}/?/ascii/tick-data-quotes/", timeout=20)
+    resp = _session().get(f"{HISTDATA_BASE}/?/ascii/tick-data-quotes/",
+                          timeout=20)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -105,11 +109,9 @@ def _histdata_info() -> list[InstrumentInfo]:
     return infos
 
 
-
 ##################################################################
 # CLI setup
 ##################################################################
-
 
 @click.group(help="Elpis CLI.")
 @click.version_option(package_name="elpis_nautilus", prog_name="elpis")
@@ -152,14 +154,14 @@ def histdata_cmd(symbol: str, date_from: datetime, date_to: datetime) -> None:
 
 @cli.group(name="show-available", help="List instruments & date ranges.")
 def show_available() -> None:
-    """Group of commands for listing available instruments 
+    """Group of commands for listing available instruments
     and their data ranges."""
 
 
 @show_available.command("histdata",
                         help="Show available ticks from HistData.com")
 def show_histdata() -> None:
-    """Fetch and display all instruments with available 
+    """Fetch and display all instruments with available
     tick-data ranges from HistData.com."""
     click.echo("Fetching metadata from HistData.com…", err=True)
     infos = _histdata_info()

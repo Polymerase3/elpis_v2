@@ -12,7 +12,6 @@ Changelog
 """
 from __future__ import annotations
 
-import argparse
 import logging
 import re
 import sys
@@ -97,13 +96,18 @@ def _year_month_range(start: datetime,
 ###############################################################################
 # HistData workflow
 ###############################################################################
+# lazily initialised session
 
 
-_SESSION: requests.Session | None = None  # lazily initialised
+_SESSION = None  # type: requests.Session | None
 
 
 def _session() -> requests.Session:
-    global _SESSION 
+    """
+    Lazily initialise and return a requests.Session with default headers.
+    Subsequent calls return the same session.
+    """
+    global _SESSION
     if _SESSION is None:
         _SESSION = requests.Session()
         _SESSION.headers.update(HEADERS)
@@ -201,7 +205,6 @@ def _fetch_zip(symbol: str, year: int, month: int, dest: Path) -> Path | None:
     size_mb = size_bytes / (1024 * 1024)
     logger.info("Saved %s (%.2f MB)", zip_path.name, size_mb)
     return zip_path
-
 
 
 def _extract_zip(zip_path: Path, dest: Path) -> None:
