@@ -1,14 +1,18 @@
 import sys
 import json
 import click
-from saxo_openapi import API
-from elpis.download.instrument_to_uic import instrument_to_uic
-from elpis.download.instrument_utils import insert_instruments, delete_instruments, fetch_instruments
-from elpis.download.data_ingest import get_data_saxo, plot_saxo_data
-from elpis.config import settings
-from datetime import datetime
 import psycopg2
-
+import time
+import shlex
+import subprocess
+from typing import List, Dict, Any
+from datetime import datetime
+from saxo_openapi import API
+from elpis.crud.instrument_to_uic import instrument_to_uic
+from elpis.crud.instrument import insert_instrument, delete_instrument, get_instrument
+from elpis.crud.data import insert_prices, get_prices, delete_prices
+from elpis.crud.plot import plot_saxo_data
+from elpis.utils.config import settings
 
 @click.group()
 def cli():
@@ -17,24 +21,20 @@ def cli():
     """
     pass
 
-
 @cli.command('insert-instrument')
 @click.argument('json_files', type=click.File('r'), nargs=-1)
-def insert_instrument(json_files):
+def _insert_instrument_cmd(json_files):
     """
     Insert **or update** rows in *market.instrument* from JSON.
 
     • Accepts any number of JSON files **or** STDIN.  
     • Each JSON must be a list of objects with keys  
-      `description, UIC, asset_type, symbol, currency, exchange`.
-    • If a row with the same *(UIC, asset_type)* already exists you’ll be
-      asked whether to update it.
+      `description, UIC, asset_type, symbol, currency, exchange`.  
     """
-
-    # ---------- read JSON ----------------------------------------------------
+    # --- load JSON payloads ---
     try:
         sources = json_files or [sys.stdin]
-        records: list[dict] = []
+        records: List[Dict[str, Any]] = []
         for f in sources:
             payload = json.load(f)
             if not isinstance(payload, list):
@@ -46,122 +46,61 @@ def insert_instrument(json_files):
         sys.exit(1)
 
     if not records:
-        click.echo('Nothing to insert.'); return
+        click.echo('Nothing to insert.')
+        return
 
-    # ---------- DB connection ------------------------------------------------
-    conn = psycopg2.connect(
-        host=settings.db_host, port=settings.db_port,
-        dbname=settings.db_name, user=settings.db_user,
-        password=settings.db_password
-    )
-    inserted = updated = skipped = 0
+    # --- delegate to the core function ---
+    summary = insert_instrument(records)
 
-    try:
-        with conn.cursor() as cur:
-            for rec in records:
-                uic        = rec.get('UIC')
-                asset_type = rec.get('asset_type')
-
-                if uic is None or asset_type is None:
-                    click.echo('⚠️  Missing UIC or asset_type – skipping one record')
-                    skipped += 1
-                    continue
-
-                # does it already exist?
-                cur.execute(
-                    "SELECT id FROM market.instrument "
-                    "WHERE uic = %s AND asset_type = %s;",
-                    (uic, asset_type)
-                )
-                row = cur.fetchone()
-
-                if row:
-                    msg = (
-                        f'Instrument (UIC={uic}, asset_type={asset_type}) already exists. '
-                        'Update it?'
-                    )
-                    if click.confirm(msg, default=False):
-                        cur.execute(
-                            """
-                            UPDATE market.instrument
-                               SET description = %(description)s,
-                                   symbol      = %(symbol)s,
-                                   currency    = %(currency)s,
-                                   exchange    = %(exchange)s
-                             WHERE uic = %(UIC)s AND asset_type = %(asset_type)s;
-                            """,
-                            rec,
-                        )
-                        updated += 1
-                    else:
-                        skipped += 1
-                        continue
-                else:  # insert new
-                    cur.execute(
-                        """
-                        INSERT INTO market.instrument
-                              (description, uic, asset_type, symbol, currency, exchange)
-                        VALUES (%(description)s, %(UIC)s, %(asset_type)s,
-                                %(symbol)s, %(currency)s, %(exchange)s);
-                        """,
-                        rec,
-                    )
-                    inserted += 1
-
-        conn.commit()
-
-    except Exception as e:
-        conn.rollback()
-        click.echo(f'❌  Database error: {e}', err=True)
-        sys.exit(1)
-    finally:
-        conn.close()
-
-    # ---------- summary ------------------------------------------------------
-    click.echo(f'✅  Inserted: {inserted}, Updated: {updated}, Skipped: {skipped}')
-
+    # --- report back ---
+    click.echo(f"✅  Inserted: {summary['inserted']}, "
+               f"Updated: {summary['updated']}, "
+               f"Skipped: {summary['skipped']}")
 
 
 @cli.command('delete-instrument')
-@click.option('--id', 'ids', type=int, multiple=True, help='Instrument id(s) to delete')
-@click.option('--uic', 'uics', type=int, multiple=True, help='UIC(s) of instruments to delete')
+@click.option('--id',     'ids',    type=int,   multiple=True, help='Instrument id(s) to delete')
+@click.option('--uic',    'uics',   type=int,   multiple=True, help='UIC(s) of instruments to delete')
 @click.option('--symbol', 'symbols', type=str, multiple=True, help='Symbol(s) of instruments to delete')
-def delete(ids, uics, symbols):
+def _delete_instrument_cmd(ids, uics, symbols):
     """
-    Delete instruments by id, uic, or symbol. Prompts for confirmation.
+    Delete instruments by id, UIC, or symbol. Prompts for confirmation.
     """
-    # Collect all matching instruments
+    # --- fetch all candidates (you likely have this helper already) ---
     try:
-        # Fetch all if specific filters provided, else error
-        results = fetch_instruments(uic=None, asset_type=None)
-        to_delete = []
-        for item in results:
-            if ids and item.get('id') in ids:
-                to_delete.append(item)
-            elif uics and item.get('uic') in uics:
-                to_delete.append(item)
-            elif symbols and item.get('symbol') in symbols:
-                to_delete.append(item)
-        if not to_delete:
-            click.echo('No matching instruments found for deletion.')
-            sys.exit(0)
-        # Show table of instruments to delete
-        click.echo('The following instruments will be deleted:')
-        _print_table(to_delete)
-        # Confirm
-        confirm = click.prompt('Type y or yes to confirm deletion', default='n')
-        if confirm.lower() not in ('y', 'yes'):
-            click.echo('Deletion cancelled.')
-            sys.exit(0)
-        # Build keys list for deletion
-        keys = [{'UIC': item.get('uic'), 'asset_type': item.get('asset_type')} for item in to_delete]
-        delete_instruments(keys)
-        click.echo(f"Deleted {len(to_delete)} instruments.")
-        sys.exit(0)
+        results = get_instrument(uic=None, asset_type=None)
     except Exception as e:
-        click.echo(f"Error deleting instruments: {e}", err=True)
+        click.echo(f"Error fetching instruments: {e}", err=True)
         sys.exit(1)
 
+    # --- filter ---
+    to_delete = []
+    for item in results:
+        if ids and item.get('id') in ids:
+            to_delete.append(item)
+        elif uics and item.get('uic') in uics:
+            to_delete.append(item)
+        elif symbols and item.get('symbol') in symbols:
+            to_delete.append(item)
+
+    if not to_delete:
+        click.echo('No matching instruments found for deletion.')
+        sys.exit(0)
+
+    # --- preview & confirm ---
+    click.echo('The following instruments will be deleted:')
+    _print_table(to_delete)
+    confirm = click.prompt('Type y or yes to confirm deletion', default='n')
+    if confirm.lower() not in ('y', 'yes'):
+        click.echo('Deletion cancelled.')
+        sys.exit(0)
+
+    # --- build keys and call core delete ---
+    keys = [{'UIC': item['uic'], 'asset_type': item['asset_type']} for item in to_delete]
+    deleted_count = delete_instrument(keys)
+
+    click.echo(f"✅  Deleted: {deleted_count} instrument(s).")
+    sys.exit(0)
 
 def _print_table(results: list):
     headers = ['id', 'uic', 'asset_type', 'symbol', 'exchange', 'description', 'currency']
@@ -192,13 +131,13 @@ def _print_table(results: list):
 @cli.command('get-instrument')
 @click.option('--uic', type=int, help='Filter by UIC')
 @click.option('--asset-type', 'asset_type', type=str, help='Filter by asset_type')
-def fetch(uic, asset_type):
+def _get_instrument(uic, asset_type):
     """
     Fetch instruments from DB, optionally filtering by UIC and/or asset_type.
     Outputs a table of results.
     """
     try:
-        results = fetch_instruments(uic=uic, asset_type=asset_type)
+        results = get_instrument(uic=uic, asset_type=asset_type)
         _print_table(results)
         sys.exit(0)
     except Exception as e:
@@ -279,296 +218,211 @@ def search(instrument, assettype, filter_uic, filter_symbol, debug, printout, to
         
 
 @cli.command('insert-prices')
-@click.option('--id', 'instrument_id', type=int, help='Internal market.instrument.id')
-@click.option('--uic', type=int, help='Instrument UIC for Saxo API')
-@click.option('--assettype', 'asset_type', help='Instrument AssetType for Saxo API')
-@click.option(
-    '--interval', 'interval_label', required=True,
-    help="Interval label (e.g. '1m','5m','15m','1h','4h','1d','1w','1mo')"
-)
-@click.option(
-    '--start-time', 'start_time', required=True,
-    help='Start time ISO8601, e.g. 2025-01-01T00:00:00'
-)
-@click.option('--verbose', '-v', is_flag=True, default=False, help='Show download progress per chunk')
-def load_prices(instrument_id, uic, asset_type, interval_label, start_time, verbose):
+@click.option('--id',         'instrument_id', type=int,    help='market.instrument.id')
+@click.option('--uic',                     type=int,    help='Instrument UIC for Saxo API')
+@click.option('--assettype', 'asset_type',  type=str,    help='Instrument AssetType for Saxo API')
+@click.option('--interval',  'interval_label', required=True,
+              help="Interval label (e.g. '1m','5m','15m','1h','4h','1d','1w','1mo')")
+@click.option('--start-time','start_time', required=True,
+              help='Start time ISO8601, e.g. 2025-01-01T00:00:00')
+@click.option('--verbose', '-v', is_flag=True, default=False,
+              help='Show download progress per chunk')
+def _insert_prices(
+    instrument_id, uic, asset_type, interval_label, start_time, verbose
+):
     """
-    Load price data from Saxo and upsert into market.price.
-
-    Provide either --id (DB id) *or* both --uic and --assettype.
+    Load and upsert price data from Saxo into market.price.
+    Provide either --id *or* both --uic and --assettype.
     """
-    # Resolve instrument identification and API keys
-    conn = psycopg2.connect(
-        host=settings.db_host, port=settings.db_port,
-        dbname=settings.db_name, user=settings.db_user,
-        password=settings.db_password
-    )
-    try:
-        with conn.cursor() as cur:
-            if instrument_id:
+    # 1) resolve instrument_id and uic/asset_type
+    if instrument_id:
+        try:
+            conn = psycopg2.connect(
+                host=settings.db_host, port=settings.db_port,
+                dbname=settings.db_name, user=settings.db_user,
+                password=settings.db_password
+            )
+            with conn.cursor() as cur:
                 cur.execute(
                     "SELECT uic, asset_type FROM market.instrument WHERE id = %s;",
                     (instrument_id,)
                 )
                 row = cur.fetchone()
-                if not row:
-                    click.echo(f"Instrument id={instrument_id} not found.", err=True)
-                    sys.exit(1)
-                uic, asset_type = row
-                resolved_db_id = instrument_id
-            else:
-                if not (uic and asset_type):
-                    click.echo(
-                        'You must supply either --id or both --uic and --assettype',
-                        err=True
-                    )
-                    sys.exit(1)
+            conn.close()
+        except Exception as e:
+            click.echo(f"Error looking up id={instrument_id}: {e}", err=True)
+            sys.exit(1)
+        if not row:
+            click.echo(f"Instrument id={instrument_id} not found.", err=True)
+            sys.exit(1)
+        uic, asset_type = row
+    else:
+        if not (uic and asset_type):
+            click.echo("You must supply either --id or both --uic and --assettype", err=True)
+            sys.exit(1)
+        try:
+            conn = psycopg2.connect(
+                host=settings.db_host, port=settings.db_port,
+                dbname=settings.db_name, user=settings.db_user,
+                password=settings.db_password
+            )
+            with conn.cursor() as cur:
                 cur.execute(
                     "SELECT id FROM market.instrument WHERE uic = %s AND asset_type = %s;",
                     (uic, asset_type)
                 )
                 row = cur.fetchone()
-                if not row:
-                    click.echo(
-                        f"Instrument UIC={uic}, asset_type={asset_type} not found.",
-                        err=True
-                    )
-                    sys.exit(1)
-                resolved_db_id = row[0]
-    finally:
-        conn.close()
+            conn.close()
+        except Exception as e:
+            click.echo(f"Error looking up {uic}/{asset_type}: {e}", err=True)
+            sys.exit(1)
+        if not row:
+            click.echo(f"Instrument UIC={uic}, asset_type={asset_type} not found.", err=True)
+            sys.exit(1)
+        instrument_id = row[0]
 
-    # Map interval label to numeric id and minutes
-    interval_map = {
-        '1m':  (1,    1),
-        '5m':  (2,    5),
-        '15m': (3,   15),
-        '1h':  (4,   60),
-        '4h':  (5,  240),
-        '1d':  (6, 1440),
-        '1w':  (7,10080),
-        '1mo': (8,43200),
-    }
-    if interval_label not in interval_map:
-        click.echo(f"Invalid interval: {interval_label}", err=True)
-        sys.exit(1)
-    interval_id, horizon_minutes = interval_map[interval_label]
-
-    # Parse start time
+    # 2) parse start time
     try:
         dt = datetime.fromisoformat(start_time)
     except ValueError:
         click.echo(f"Invalid start-time format: {start_time}", err=True)
         sys.exit(1)
-        
-    # Check for existing price data (only warn if count>0)
-    conn = psycopg2.connect(
-        host=settings.db_host, port=settings.db_port,
-        dbname=settings.db_name, user=settings.db_user,
-        password=settings.db_password
-    )
+
+    # 3) optional warning if data exists
     try:
+        conn = psycopg2.connect(
+            host=settings.db_host, port=settings.db_port,
+            dbname=settings.db_name, user=settings.db_user,
+            password=settings.db_password
+        )
         with conn.cursor() as cur:
+            # map label→id
+            label_map = {'1m':1,'5m':2,'15m':3,'1h':4,'4h':5,'1d':6,'1w':7,'1mo':8}
+            iid = label_map.get(interval_label)
             cur.execute(
                 "SELECT COUNT(*), MIN(time_price) FROM market.price "
                 "WHERE instrument_id = %s AND interval_id = %s;",
-                (resolved_db_id, interval_id)
+                (instrument_id, iid)
             )
             count, first_ts = cur.fetchone()
-            print(count)
-        if count and count > 0:
-            click.echo(f"Warning: Found {count} existing price points starting from {first_ts}.")
-            confirm = click.prompt(
-                'Type y or yes to overwrite and fetch fresh data', default='n'
-            )
-            if confirm.lower() not in ('y', 'yes'):
-                click.echo('Operation cancelled.')
-                sys.exit(0)
-    finally:
         conn.close()
+        if count:
+            click.echo(f"⚠️  Found {count} existing rows from {first_ts}.")
+            confirm = click.prompt(
+                "Type y or yes to overwrite and fetch fresh data", default="n"
+            )
+            if confirm.lower() not in ("y","yes"):
+                click.echo("Operation cancelled.")
+                sys.exit(0)
+    except Exception:
+        # on error, just proceed
+        pass
 
-    # Fetch data
-    try:
-        rows = get_data_saxo(
-            access_token=settings.access_token,
-            account_key=settings.account_key,
-            Uic=uic,
-            asset_type=asset_type,
-            interval_code=interval_id,
-            start_time=dt,
-            horizon=horizon_minutes,
-            verbose=verbose
-        )
-        click.echo(
-            f"Fetched {len(rows)} rows for instrument id={resolved_db_id}, "
-            f"interval {interval_label} (ID {interval_id})."
-        )
-        sys.exit(0)
-    except Exception as e:
-        click.echo(f"Error loading prices: {e}", err=True)
-        sys.exit(1)
+    # 4) do it
+    rows = insert_prices(
+        instrument_id=instrument_id,
+        uic=uic,
+        asset_type=asset_type,
+        interval_label=interval_label,
+        start_time=dt,
+        verbose=verbose
+    )
+
+    click.echo(f"✅  Upserted {rows} price rows for instrument id={instrument_id}.")
+    sys.exit(0)
         
 @cli.command('get-prices')
-@click.option('--id', 'instrument_id', type=int, help='Internal market.instrument.id')
-@click.option('--uic', type=int, help='Instrument UIC for Saxo API')
-@click.option('--assettype', 'asset_type', help='Instrument AssetType for Saxo API')
-@click.option('--interval', 'interval_label', required=True,
+@click.option('--id',         'instrument_id', type=int,    help='Internal market.instrument.id')
+@click.option('--uic',                      type=int,    help='Instrument UIC for Saxo API')
+@click.option('--assettype',  'asset_type',  type=str,    help='Instrument AssetType for Saxo API')
+@click.option('--interval',   'interval_label', required=True,
               help="Interval label (e.g. '1m','5m','15m','1h','4h','1d','1w','1mo')")
-@click.option('--head', type=int, default=None, help='Show only the first N rows')
-@click.option('--from-date', 'from_date', help='Filter rows with time_price >= this ISO timestamp')
-@click.option('--to-date', 'to_date', help='Filter rows with time_price <= this ISO timestamp')
-def show_prices(instrument_id, uic, asset_type, interval_label, head, from_date, to_date):
-    """Display stored prices for a given instrument and interval.
-
-    You can identify the instrument by internal **id** *or* by (uic, assettype).
-    Optional filters:
-      • --from-date / --to-date (ISO 8601)
-      • --head N                (limit rows returned)
-    Only columns that contain at least one non‑null value are shown.
+@click.option('--head',       type=int,    default=None, help='Show only the first N rows')
+@click.option('--from-date',  'from_date', default=None, help='Filter rows with time_price >= this ISO timestamp')
+@click.option('--to-date',    'to_date',   default=None, help='Filter rows with time_price <= this ISO timestamp')
+def _get_prices(
+    instrument_id, uic, asset_type, interval_label, head, from_date, to_date
+):
     """
-    # ---------------- Resolve instrument -----------------
-    conn = psycopg2.connect(host=settings.db_host, port=settings.db_port,
-                            dbname=settings.db_name, user=settings.db_user,
-                            password=settings.db_password)
-    try:
-        with conn.cursor() as cur:
-            if instrument_id:
-                cur.execute("SELECT uic, asset_type FROM market.instrument WHERE id=%s;", (instrument_id,))
-                row = cur.fetchone()
-                if not row:
-                    click.echo(f"Instrument id={instrument_id} not found.", err=True)
-                    sys.exit(1)
-                uic, asset_type = row
-                resolved_id = instrument_id
-            else:
-                if not (uic and asset_type):
-                    click.echo('Provide --id OR (--uic and --assettype).', err=True)
-                    sys.exit(1)
-                cur.execute("SELECT id FROM market.instrument WHERE uic=%s AND asset_type=%s;", (uic, asset_type))
-                row = cur.fetchone()
-                if not row:
-                    click.echo(f"Instrument uic={uic}, asset_type={asset_type} not found.", err=True)
-                    sys.exit(1)
-                resolved_id = row[0]
-    finally:
-        conn.close()
+    Display stored prices for a given instrument and interval.
 
-    # -------------- interval mapping ---------------------
-    interval_map = {'1m':1,'5m':2,'15m':3,'1h':4,'4h':5,'1d':6,'1w':7,'1mo':8}
-    if interval_label not in interval_map:
-        click.echo(f"Invalid interval: {interval_label}", err=True)
+    Identification: --id OR (--uic and --assettype).
+    Optional filters: --from-date, --to-date (ISO 8601), --head N.
+    Only columns with at least one non-null value are shown.
+    """
+    try:
+        rows, columns = get_prices(
+            instrument_id, uic, asset_type,
+            interval_label, head, from_date, to_date
+        )
+    except ValueError as e:
+        click.echo(f"❌  {e}", err=True)
         sys.exit(1)
-    interval_id = interval_map[interval_label]
-
-    # -------------- optional date filters ---------------
-    filters = []
-    params  = [resolved_id, interval_id]
-
-    if from_date:
-        try:
-            _ = datetime.fromisoformat(from_date)
-        except ValueError:
-            click.echo('Invalid --from-date format. Use ISO8601.', err=True)
-            sys.exit(1)
-        filters.append("time_price >= %s")
-        params.append(from_date)
-
-    if to_date:
-        try:
-            _ = datetime.fromisoformat(to_date)
-        except ValueError:
-            click.echo('Invalid --to-date format. Use ISO8601.', err=True)
-            sys.exit(1)
-        filters.append("time_price <= %s")
-        params.append(to_date)
-
-    where_clause = " AND ".join(["instrument_id=%s", "interval_id=%s"] + filters)
-    order_clause = "ORDER BY time_price DESC"
-    limit_clause = ""
-    if head:
-        limit_clause = "LIMIT %s"
-        params.append(head)
-
-    sql = f"SELECT * FROM market.price WHERE {where_clause} {order_clause} {limit_clause};"
-
-    # ---------------- query ------------------------------
-    conn = psycopg2.connect(host=settings.db_host, port=settings.db_port,
-                            dbname=settings.db_name, user=settings.db_user,
-                            password=settings.db_password)
-    try:
-        with conn.cursor() as cur:
-            cur.execute(sql, params)
-            rows = cur.fetchall()
-            columns = [d[0] for d in cur.description]
-    finally:
-        conn.close()
 
     if not rows:
-        click.echo('No price data found.')
+        click.echo("No price data found.")
         return
 
-        # ---------------- format + print table ------------------
-    # keep only columns that contain at least one non‑null value
-    keep_idx = [i for i, col in enumerate(columns) if any(row[i] is not None for row in rows)]
+    # ===== format table: only keep cols with any non-null =====
+    keep_idx = [i for i, c in enumerate(columns)
+                if any(row[i] is not None for row in rows)]
     keep_cols = [columns[i] for i in keep_idx]
 
-    # compute width = max(len(cell), len(header)) for each column
-    widths = [len(keep_cols[i]) for i in range(len(keep_cols))]
-    for row in rows:
+    # compute column widths
+    widths = [len(col) for col in keep_cols]
+    for r in rows:
         for j, idx in enumerate(keep_idx):
-            widths[j] = max(widths[j], len(str(row[idx])))
+            widths[j] = max(widths[j], len(str(r[idx])))
 
-    # helper to pad all but the last column (avoids right‑hand trailing blanks)
-    def pad(value: str, col_idx: int) -> str:
-        if col_idx == len(widths) - 1:
-            return value  # last column – no padding
-        return value.ljust(widths[col_idx])
+    def pad(val: str, col_i: int) -> str:
+        return val if col_i == len(widths)-1 else val.ljust(widths[col_i])
 
     # header
     header = " | ".join(pad(col, i) for i, col in enumerate(keep_cols))
-    sep    = "-+-".join("-" * len(col) if i == len(widths)-1 else "-" * widths[i]
-                         for i, col in enumerate(keep_cols))
+    sep    = "-+-".join("-" * widths[i] for i in range(len(widths)))
     click.echo(header)
     click.echo(sep)
 
     # rows
-    for row in rows:
-        line = " | ".join(pad(str(row[idx]), j) for j, idx in enumerate(keep_idx))
+    for r in rows:
+        line = " | ".join(pad(str(r[idx]), j)
+                          for j, idx in enumerate(keep_idx))
         click.echo(line)
         
 # ──────────────────────────────────────────────────────────────────────────────
 # Delete rows from market.price
 # ──────────────────────────────────────────────────────────────────────────────
 @cli.command('delete-prices')
-@click.option('--id',          'instrument_id', type=int, help='market.instrument.id')
-@click.option('--uic',         type=int,         help='Instrument UIC')
-@click.option('--assettype',   'asset_type',     help='Instrument AssetType')
-@click.option('--interval',    'interval_label', required=True,
+@click.option('--id',        'instrument_id', type=int,    help='market.instrument.id')
+@click.option('--uic',                     type=int,    help='Instrument UIC')
+@click.option('--assettype', 'asset_type',   type=str,    help='Instrument AssetType')
+@click.option('--interval',  'interval_label', required=True,
               help="Interval label: 1m / 5m / 15m / 1h / 4h / 1d / 1w / 1mo")
-@click.option('--from-time',   'from_time', default=None,
-              help="Delete from (inclusive)  – ISO-8601, e.g. 2023-01-01T00:00:00")
-@click.option('--to-time',     'to_time',   default=None,
-              help="Delete to   (exclusive) – ISO-8601, e.g. 2023-12-31T23:59:59")
-def delete_prices(instrument_id, uic, asset_type,
-                  interval_label, from_time, to_time):
+@click.option('--from-time', 'from_time',    default=None,
+              help="Delete from (inclusive) – ISO-8601, e.g. 2025-01-01T00:00:00")
+@click.option('--to-time',   'to_time',      default=None,
+              help="Delete to   (exclusive) – ISO-8601, e.g. 2025-12-31T23:59:59")
+def _delete_prices_cmd(
+    instrument_id, uic, asset_type,
+    interval_label, from_time, to_time
+):
     """
     Delete price rows from *market.price*.
 
-    Supply either --id **or** both --uic and --assettype, plus an interval
-    label.  Optionally limit the deletion with --from-time / --to-time.
-    A summary table is shown and you must confirm the operation.
+    Supply --id **or** both --uic and --assettype, plus --interval.
+    Optionally limit with --from-time / --to-time.
     """
-    # ── resolve instrument ────────────────────────────────────────────────────
-    conn = psycopg2.connect(
-        host=settings.db_host, port=settings.db_port,
-        dbname=settings.db_name, user=settings.db_user,
-        password=settings.db_password
-    )
+    # ── resolve instrument_id ↔ (uic, asset_type) ─────────
     try:
+        conn = psycopg2.connect(
+            host=settings.db_host, port=settings.db_port,
+            dbname=settings.db_name, user=settings.db_user,
+            password=settings.db_password
+        )
         with conn.cursor() as cur:
             if instrument_id:
                 cur.execute(
-                    "SELECT id, uic, asset_type FROM market.instrument WHERE id=%s;",
+                    "SELECT id FROM market.instrument WHERE id = %s;",
                     (instrument_id,)
                 )
             else:
@@ -576,127 +430,238 @@ def delete_prices(instrument_id, uic, asset_type,
                     click.echo('Provide --id *or* both --uic and --assettype', err=True)
                     sys.exit(1)
                 cur.execute(
-                    "SELECT id, uic, asset_type FROM market.instrument "
-                    "WHERE uic=%s AND asset_type=%s;",
+                    "SELECT id FROM market.instrument WHERE uic = %s AND asset_type = %s;",
                     (uic, asset_type)
                 )
             row = cur.fetchone()
-            if not row:
-                click.echo('Instrument not found.', err=True); sys.exit(1)
-            resolved_id, uic, asset_type = row
     finally:
         conn.close()
 
-    # ── interval mapping ─────────────────────────────────────────────────────
-    imap = {'1m':1,'5m':2,'15m':3,'1h':4,'4h':5,'1d':6,'1w':7,'1mo':8}
-    if interval_label not in imap:
-        click.echo('Invalid interval label', err=True); sys.exit(1)
-    interval_id = imap[interval_label]
+    if not row:
+        click.echo("❌  Instrument not found.", err=True)
+        sys.exit(1)
+    resolved_id = row[0]
 
-    # ── parse from/to times ──────────────────────────────────────────────────
-    def _parse(ts):
-        if ts is None: return None
+    # ── parse timestamps ───────────────────────────────────
+    def _parse(ts, name):
+        if ts is None:
+            return None
         try:
             return datetime.fromisoformat(ts)
         except ValueError:
-            click.echo(f'Invalid ISO-8601 timestamp: {ts}', err=True); sys.exit(1)
+            click.echo(f"❌  Invalid {name} format: {ts}", err=True)
+            sys.exit(1)
 
-    t_from = _parse(from_time)
-    t_to   = _parse(to_time)
+    t_from = _parse(from_time, "--from-time")
+    t_to   = _parse(to_time,   "--to-time")
 
-    # ── build SQL WHERE clause ───────────────────────────────────────────────
-    where = ["instrument_id = %s", "interval_id = %s"]
-    params = [resolved_id, interval_id]
-    if t_from:
-        where.append("time_price >= %s");  params.append(t_from)
-    if t_to:
-        where.append("time_price <  %s");  params.append(t_to)
-    where_clause = " AND ".join(where)
+    # ── delegate everything else ───────────────────────────
+    delete_prices(resolved_id, interval_label, t_from, t_to)
+    
+    
+@cli.command('summary-prices')
+@click.option('--separate', is_flag=True,
+              help='Run the summary in a new terminal window')
+def price_summary(separate):
+    """
+    Summarize each (symbol, asset_type, instrument_id, interval) in market.price
+    with first/last time_price and row count.
+    """
+    if separate:
+        argv = [shlex.quote(a) for a in sys.argv if a != '--separate']
+        cmdline = " ".join(argv)
+        terminal_cmd = [
+            "gnome-terminal", "--",
+            "bash", "-c",
+            f"{cmdline}; echo; echo \"(press enter to close)\"; read"
+        ]
+        try:
+            subprocess.Popen(terminal_cmd)
+        except FileNotFoundError:
+            click.echo("❌  gnome-terminal not found; adjust `terminal_cmd`.", err=True)
+        return
 
-    # ── count rows to delete ────────────────────────────────────────────────
-    conn = psycopg2.connect(
-        host=settings.db_host, port=settings.db_port,
-        dbname=settings.db_name, user=settings.db_user,
-        password=settings.db_password
-    )
+    # --- POPRAWIONY SELECT ---
+    sql = """
+        SELECT
+            i.symbol,                -- 1
+            i.asset_type,            -- 2
+            p.instrument_id,         -- 3
+            ic.label         AS interval_label,
+            MIN(p.time_price) AS first_time,
+            MAX(p.time_price) AS last_time,
+            COUNT(*)         AS row_count
+        FROM market.price AS p
+        JOIN market.instrument AS i
+          ON p.instrument_id = i.id
+        JOIN core.interval_code AS ic
+          ON p.interval_id = ic.id
+        GROUP BY
+            i.symbol,
+            i.asset_type,
+            p.instrument_id,
+            ic.label,
+            ic.id
+        ORDER BY
+            p.instrument_id,
+            ic.id;
+    """
+
+    start = time.monotonic()
     try:
+        conn = psycopg2.connect(
+            host=settings.db_host,
+            port=settings.db_port,
+            dbname=settings.db_name,
+            user=settings.db_user,
+            password=settings.db_password
+        )
         with conn.cursor() as cur:
-            cur.execute(
-                f"SELECT COUNT(*), MIN(time_price), MAX(time_price) "
-                f"FROM market.price WHERE {where_clause};",
-                tuple(params)
-            )
-            cnt, t_min, t_max = cur.fetchone()
-
-            if cnt == 0:
-                click.echo('No rows match the criteria – nothing to delete.')
-                return
-
-            # ── show summary table ──────────────────────────────────────────
-            hdr = ['instrument_id','interval_id','from','to','rows']
-            colw = [14,12,19,19,10]
-            row_data = [
-                str(resolved_id).rjust(colw[0]),
-                str(interval_id).rjust(colw[1]),
-                (t_from.isoformat() if t_from else str(t_min))[:19].ljust(colw[2]),
-                (t_to.isoformat()   if t_to   else str(t_max))[:19].ljust(colw[3]),
-                f'{cnt:,}'.rjust(colw[4])
-            ]
-            click.echo(" | ".join(h.ljust(colw[i]) for i,h in enumerate(hdr)))
-            click.echo("-+-".join('-'*w for w in colw))
-            click.echo(" | ".join(row_data))
-            click.echo()
-
-            if not click.confirm('Proceed with deletion?', default=False):
-                click.echo('Aborted.'); return
-
-            # ── delete rows ────────────────────────────────────────────────
-            cur.execute(f"DELETE FROM market.price WHERE {where_clause};", tuple(params))
-        conn.commit()
-        click.echo(f'✅  Deleted {cnt:,} rows.')
+            cur.execute(sql)
+            rows = cur.fetchall()
     except Exception as e:
-        conn.rollback()
-        click.echo(f'❌  Error: {e}', err=True); sys.exit(1)
+        click.echo(f"❌  Database error: {e}", err=True)
+        sys.exit(1)
     finally:
-        conn.close()
+        if 'conn' in locals():
+            conn.close()
+    elapsed = time.monotonic() - start
 
-        
-# The heavy‑lifting function lives below (plot_saxo_data).  Here we only wrap it
-# for the CLI.
+    if not rows:
+        click.echo("No price data found.")
+        return
+
+    headers    = ["symbol", "asset_type", "instrument_id", "interval", "from", "to", "row_count"]
+    col_widths = [len(h) for h in headers]
+
+    # długości kolumn – teraz sym i atype to już stringi
+    for sym, atype, iid, interval, first, last, cnt in rows:
+        col_widths[0] = max(col_widths[0], len(sym))
+        col_widths[1] = max(col_widths[1], len(atype))
+        col_widths[2] = max(col_widths[2], len(str(iid)))
+        col_widths[3] = max(col_widths[3], len(interval))
+        col_widths[4] = max(col_widths[4], len(first.isoformat()))
+        col_widths[5] = max(col_widths[5], len(last.isoformat()))
+        col_widths[6] = max(col_widths[6], len(str(cnt)))
+
+    header_line = " | ".join(headers[i].ljust(col_widths[i]) for i in range(len(headers)))
+    sep_line    = "-+-".join("-" * col_widths[i] for i in range(len(headers)))
+    click.echo(header_line)
+    click.echo(sep_line)
+
+    for sym, atype, iid, interval, first, last, cnt in rows:
+        parts = [
+            sym.ljust(col_widths[0]),
+            atype.ljust(col_widths[1]),
+            str(iid).ljust(col_widths[2]),
+            interval.ljust(col_widths[3]),
+            first.isoformat().ljust(col_widths[4]),
+            last.isoformat().ljust(col_widths[5]),
+            str(cnt).rjust(col_widths[6]),
+        ]
+        click.echo(" | ".join(parts))
+
+    click.echo("\n--------")
+    click.echo(f"Query executed in {elapsed:.3f} seconds")
+
+import json
+import click
+from typing import Any, Dict, List
+from elpis.crud.plot import plot_saxo_data
+
+import json
+import sys
+import click
+from elpis.crud.plot import plot_saxo_data  # wherever you defined it
 
 @cli.command('plot-prices')
-@click.option('--id', 'instrument_id', type=int, help='Internal market.instrument.id')
-@click.option('--uic', type=int, help='Instrument UIC for Saxo')
-@click.option('--assettype', 'asset_type', help='AssetType for Saxo')
-@click.option('--interval', 'interval_label', required=True,
+@click.option('--separate', is_flag=True,
+              help='Run the plotting in a new terminal window')
+@click.option('--id',         'instrument_id', type=int, help='market.instrument.id')
+@click.option('--uic',                        type=int, help='Instrument UIC for Saxo')
+@click.option('--assettype',  'asset_type',   type=str, help='AssetType for Saxo')
+@click.option('--interval',   'interval_label', required=True,
               help="Interval label: 1m 5m 15m 1h 4h 1d 1w 1mo")
-@click.option('--from-date', help='ISO timestamp start filter (>=)')
-@click.option('--to-date',   help='ISO timestamp end   filter (<=)')
-@click.option('--side', 'price_side', type=click.Choice(['ask','bid','mid'], case_sensitive=False),
+@click.option('--from-date',  'from_date',    help='ISO timestamp start filter (>=)')
+@click.option('--to-date',    'to_date',      help='ISO timestamp end   filter (<=)')
+@click.option('--side',       'price_side',
+              type=click.Choice(['ask','bid','mid'], case_sensitive=False),
               default='mid', show_default=True,
               help="Which price side to plot when Ask/Bid available")
 @click.option('-v', '--verbose', is_flag=True, help='Verbose output')
-def plot_prices(instrument_id, uic, asset_type, interval_label, from_date, to_date, price_side, verbose):
-    """Plot stored prices with Backtrader.
-
-    Identify instrument by **--id** or by the (uic, assettype) pair, same as
-    *show-prices*.  Use --side ask|bid|mid to choose which columns to draw for
-    instruments that carry Ask/Bid fields (FxSpot, CFDs, futures, …).
+@click.option('-i', '--indicator',
+              multiple=True,
+              help=(
+                  "Indicator spec as JSON, e.g. "
+                  "'{\"name\":\"SMA\",\"params\":{\"period\":30}}'. "
+                  "Repeatable to add multiple indicators."
+              ))
+@click.option('--style', type=click.Choice(['bar','candle','line'], case_sensitive=False),
+              default='candle', show_default=True,
+              help="Plot style for Backtrader: bar, candle, or line")
+@click.option('--mpl-style', default='quantum',
+              type=click.Choice(['default','dark','quantum','cyberpunk'], case_sensitive=False),
+              help="Matplotlib theme to apply before plotting")
+def _plot_prices(
+    separate,
+    instrument_id, uic, asset_type,
+    interval_label, from_date, to_date,
+    price_side, verbose, indicator, style, mpl_style
+):
     """
+    Plot stored prices with DynamicStrat indicators.
+
+    Identify instrument by --id or by the (uic, assettype) pair.
+    Use --side ask|bid|mid to choose which columns to draw.
+    Pass one or more --indicator JSON blobs to specify indicators.
+
+    Example:
+      elpis plot-prices --id 123 --interval 1h \
+        -i '{"name":"SMA","params":{"period":50}}' \
+        -i '{"name":"MACD","params":{"period_me1":12,"period_me2":26}}'
+    """
+    # 0) If requested, re-spawn this same command in a new terminal
+    if separate:
+        argv = [shlex.quote(a) for a in sys.argv if a != '--separate']
+        cmdline = " ".join(argv)
+        terminal_cmd = [
+            "gnome-terminal", "--",
+            "bash", "-c",
+            f"{cmdline}; echo; echo \"(press enter to close)\"; read"
+        ]
+        try:
+            subprocess.Popen(terminal_cmd)
+        except FileNotFoundError:
+            click.echo("❌  gnome-terminal not found; adjust `terminal_cmd`.", err=True)
+        return
+
+    # 1) Parse JSON specs
+    try:
+        specs = [json.loads(spec) for spec in indicator]
+    except json.JSONDecodeError as e:
+        click.echo(f"❌  Invalid indicator JSON: {e}", err=True)
+        sys.exit(1)
+
+    # 2) Call the plotting helper
     try:
         plot_saxo_data(
-            instrument_id=instrument_id,
-            uic=uic,
-            asset_type=asset_type,
-            interval_label=interval_label,
-            from_date=from_date,
-            to_date=to_date,
-            price_side=price_side.lower(),
-            verbose=verbose,
+            instrument_id  = instrument_id,
+            uic            = uic,
+            asset_type     = asset_type,
+            interval_label = interval_label,
+            from_date      = from_date,
+            to_date        = to_date,
+            price_side     = price_side.lower(),
+            indicator      = specs,
+            verbose        = verbose,
+            style          = style.lower(),
+            mpl_style_name = mpl_style,
         )
     except Exception as exc:
-        click.echo(f"Error: {exc}", err=True)
+        click.echo(f"❌  Error: {exc}", err=True)
         sys.exit(1)
+
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Show DB size  (collapsed view by default, expand with --internal)
