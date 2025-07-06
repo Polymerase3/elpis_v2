@@ -154,6 +154,7 @@ dependencies:
   - pysocks=1.7.1=py313h06a4308_0
   - python=3.13.2=hf623796_100_cp313
   - python-dateutil=2.9.0post0=py313h06a4308_2
+  - python-dotenv
   - python-fastjsonschema=2.20.0=py313h06a4308_0
   - python-json-logger=3.2.1=py313h06a4308_0
   - python_abi=3.13=0_cp313
