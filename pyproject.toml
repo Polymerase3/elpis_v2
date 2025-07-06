@@ -1,0 +1,21 @@
+[project]
+name = "elpis"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Polymerase3",email = "polimerazaiii@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+]
+
+[tool.poetry]
+packages = [{include = "elpis", from = "src"}]
+
+[tool.poetry.scripts]
+elpis = "elpis_nautilus.cli:cli"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
