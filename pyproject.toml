@@ -11,7 +11,9 @@ dependencies = [
 ]
 
 [tool.poetry]
-packages = [{include = "elpis", from = "src"}]
+packages = [
+  { include = "elpis_nautilus", from = "src" }
+]
 
 [tool.poetry.scripts]
 elpis = "elpis_nautilus.cli:cli"
