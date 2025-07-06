@@ -39,6 +39,7 @@ jobs:
           lint-path: |
             src/elpis_nautilus
           python-version: 3.9
+          requirements-path: requirements.txt
           readme-path: README.md
           pylintrc-path: .pylintrc
           badge-text: PyLint
