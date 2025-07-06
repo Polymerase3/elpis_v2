@@ -19,8 +19,7 @@ from elpis_nautilus.data_downloaders.downloader_main import (
     HISTDATA_BASE,
     _ensure_tmp_dir,
     _session,
-    download_histdata,
-    logger as _dl_logger,
+    download_histdata
 )
 
 # Initialize logging for CLI
@@ -29,11 +28,20 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-_dl_logger  # noqa: F401
+
 LOGGER: Final = logging.getLogger("elpis.cli")
 
 
 class InstrumentInfo(NamedTuple):
+    """
+    Represents a financial instrument’s available range and interval.
+
+    Attributes:
+        symbol (str): The instrument’s ticker or symbol (e.g., "EURUSD").
+        date_from (datetime): The first date for which tick data is available.
+        date_to (datetime): The last date for which tick data is available.
+        interval (str): The data interval or granularity (e.g., "tick", "1min").
+    """
     symbol: str
     date_from: datetime
     date_to: datetime
@@ -52,51 +60,51 @@ _MONTH_MAP: Final[dict[str, int]] = {
 
 
 def _histdata_info() -> list[InstrumentInfo]:
-    """Scrape HistData homepage for symbols and their start dates."""
-    # Fetch instrument list page
-    list_url = f"{HISTDATA_BASE}/?/ascii/tick-data-quotes/"
-    resp = _session().get(list_url, timeout=20)
+    """
+    Scrape HistData.com for all available tick‐data instruments and their date ranges.
+
+    Returns:
+        List[InstrumentInfo]: one entry per symbol with (symbol, date_from, date_to, "tick").
+    """
+    resp = _session().get(f"{HISTDATA_BASE}/?/ascii/tick-data-quotes/", timeout=20)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    print(list_url)
     infos: list[InstrumentInfo] = []
-    # Each instrument is in a <td> with an <a href>
-    # containing '/ascii/tick-data-quotes/'
     for td in soup.find_all("td"):
-        link = None
-        for a in td.find_all("a", href=True):
-            if "/ascii/tick-data-quotes/" in a["href"]:
-                link = a
-                break
-        if not link:
+        link = next(
+            (a for a in td.find_all("a", href=True)
+             if "/ascii/tick-data-quotes/" in a["href"]),
+            None
+        )
+        if not link or not (strong := link.find("strong")):
             continue
-        # Symbol inside <strong>, e.g. <strong>EUR/USD</strong>
-        strong = link.find("strong")
-        if not strong:
-            continue
-        sym = strong.text.strip().replace("/", "").upper()
-        # After the <br>, text like '(2000/May)'
-        raw = td.get_text(separator=" ")
-        m = re.search(r"\((\d{4})/(\w+)\)", raw)
+
+        symbol = strong.text.replace("/", "").strip().upper()
+        m = re.search(r"\((\d{4})/(\w+)\)", td.get_text(" "))
         if not m:
-            LOGGER.warning("No start date for %s", sym)
+            LOGGER.warning("No start date for %s", symbol)
             continue
-        year, mon = int(m.group(1)), m.group(2)
-        mon_num = _MONTH_MAP.get(mon.capitalize())
-        if not mon_num:
-            LOGGER.error("Unknown month '%s' for %s", mon, sym)
+
+        year = int(m.group(1))
+        month = _MONTH_MAP.get(m.group(2).capitalize())
+        if not month:
+            LOGGER.error("Unknown month '%s' for %s", m.group(2), symbol)
             continue
-        date_from = datetime(year, mon_num, 1)
-        # End date = last complete month
+
+        date_from = datetime(year, month, 1)
         today = date.today()
-        if today.month == 1:
-            end_year, end_month = today.year - 1, 12
-        else:
-            end_year, end_month = today.year, today.month - 1
-        date_to = datetime(end_year, end_month, 1)
-        infos.append(InstrumentInfo(sym, date_from, date_to, "tick"))
+        date_to = datetime(
+            today.year - (today.month == 1),
+            (today.month - 2) % 12 + 1,
+            1
+        )
+
+        infos.append(InstrumentInfo(symbol, date_from, date_to, "tick"))
+
     return infos
+
+
 
 ##################################################################
 # CLI setup
@@ -106,12 +114,13 @@ def _histdata_info() -> list[InstrumentInfo]:
 @click.group(help="Elpis CLI.")
 @click.version_option(package_name="elpis_nautilus", prog_name="elpis")
 def cli() -> None:
-    pass
+    """Top-level command group for the Elpis Nautilus CLI."""
 
 
 @cli.group(help="Download market data from providers.")
 def download() -> None:
-    pass
+    """Group of commands for downloading market data from
+    supported providers."""
 
 
 @download.command("histdata", help="Tick data from HistData.com")
@@ -129,6 +138,8 @@ def download() -> None:
     help="End YYYY-MM",
 )
 def histdata_cmd(symbol: str, date_from: datetime, date_to: datetime) -> None:
+    """Download tick data for a given symbol and
+    date range from HistData.com."""
     if date_to < date_from:
         raise click.BadParameter("'--to' must be >= '--from'")
     tmp = _ensure_tmp_dir()
@@ -141,12 +152,15 @@ def histdata_cmd(symbol: str, date_from: datetime, date_to: datetime) -> None:
 
 @cli.group(name="show-available", help="List instruments & date ranges.")
 def show_available() -> None:
-    pass
+    """Group of commands for listing available instruments 
+    and their data ranges."""
 
 
 @show_available.command("histdata",
                         help="Show available ticks from HistData.com")
 def show_histdata() -> None:
+    """Fetch and display all instruments with available 
+    tick-data ranges from HistData.com."""
     click.echo("Fetching metadata from HistData.com…", err=True)
     infos = _histdata_info()
     if not infos:

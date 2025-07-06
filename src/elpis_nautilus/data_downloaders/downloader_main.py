@@ -36,7 +36,7 @@ from elpis_nautilus.utils.config import settings
 logger = logging.getLogger("data_download")
 
 # Attach a handler only if the root logger (or any external code) has not
-# already configured logging.  This ensures logs are visible when the module is
+# already configured logging. This ensures logs are visible when the module is
 # used programmatically.
 
 
@@ -103,7 +103,7 @@ _SESSION: requests.Session | None = None  # lazily initialised
 
 
 def _session() -> requests.Session:
-    global _SESSION  # noqa: PLW0603
+    global _SESSION 
     if _SESSION is None:
         _SESSION = requests.Session()
         _SESSION.headers.update(HEADERS)
@@ -197,9 +197,11 @@ def _fetch_zip(symbol: str, year: int, month: int, dest: Path) -> Path | None:
             if chunk:
                 fh.write(chunk)
 
-    size = zip_path.stat().st_size
-    logger.info("Saved %s (%d bytes)", zip_path.name, size)
+    size_bytes = zip_path.stat().st_size
+    size_mb = size_bytes / (1024 * 1024)
+    logger.info("Saved %s (%.2f MB)", zip_path.name, size_mb)
     return zip_path
+
 
 
 def _extract_zip(zip_path: Path, dest: Path) -> None:
@@ -240,48 +242,3 @@ def download_histdata(symbol: str,
         if zip_path:
             _extract_zip(zip_path, dest)
     logger.info("Completed %s", symbol)
-
-###############################################################################
-# CLI entry
-###############################################################################
-
-
-def _parse_cli() -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description="Download market data from external providers")
-    p.add_argument("provider", choices=["histdata"], help="Data provider")
-    p.add_argument("--symbol", required=True)
-    p.add_argument("--from", dest="date_from", required=True, help="YYYY-MM")
-    p.add_argument("--to", dest="date_to", required=True, help="YYYY-MM")
-    return p.parse_args()
-
-
-def main() -> None:
-    args = _parse_cli()
-    tmp = _ensure_tmp_dir()
-
-    prompt = f"Proceed with {args.symbol.upper()}? [y/N] "
-    response = input(prompt)
-    normalized = response.strip().lower()
-
-    if normalized not in {"y", "yes"}:
-        sys.exit("User aborted.")
-
-    try:
-        start = datetime.strptime(args.date_from, "%Y-%m")
-        end = datetime.strptime(args.date_to, "%Y-%m")
-    except ValueError:
-        sys.exit("Dates must be YYYY-MM")
-    if end < start:
-        sys.exit("'to' date must be >= 'from'")
-
-    if args.provider == "histdata":
-        download_histdata(args.symbol.upper(), start, end, tmp)
-    else:
-        sys.exit(f"Provider '{args.provider}' not implemented")
-
-    logger.info("Done – CSV files in %s", tmp)
-
-
-if __name__ == "__main__":
-    main()
