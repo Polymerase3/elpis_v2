@@ -17,12 +17,10 @@ jobs:
       - name: Set up Conda environment
         uses: conda-incubator/setup-miniconda@v2
         with:
-          # If you need a specific Python version, set python-version here
-          # python-version: "3.11"
           environment-file: environment_setup.yml
           activate-environment: elpis
 
-      # 1.1) Install my package
+      # 1.1) Install your package
       - name: Install your package
         shell: bash -l {0}
         run: |
@@ -32,23 +30,41 @@ jobs:
       - name: Install test & lint dependencies
         shell: bash -l {0}
         run: |
-          conda install --yes pytest pytest-cov flake8 click tabulate beautifulsoup4
-          # if you have other test deps not in your yml, add them here
+          conda install --yes pytest pytest-cov flake8 click tabulate beautifulsoup4 pylint
 
-      # 3) Lint
+      # 3) Lint with Pylint (badge update & score check)
+      - name: Lint with Pylint
+        uses: Silleellie/pylint-github-action@v2.1
+        with:
+          # adjust paths as needed
+          lint-path: |
+            src/elpis_nautilus
+          python-version: 3.9
+          requirements-path: requirements.txt
+          readme-path: README.md
+          pylintrc-path: .pylintrc
+          badge-text: PyLint
+          color-bad-score: red
+          color-ok-score: orange
+          color-good-score: yellow
+          color-perfect-score: brightgreen
+
+      # 4) Lint with flake8
       - name: Lint with flake8
         shell: bash -l {0}
         run: |
           flake8 src/elpis_nautilus tests
 
-      # 4) Run pytest with coverage
+      # 5) Run pytest with coverage
       - name: Run tests with coverage
         shell: bash -l {0}
         run: |
           pytest --cov=src/elpis_nautilus --cov-branch --cov-report=xml
 
-      # 5) Upload to Codecov
+      # 6) Upload to Codecov
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5
         with:
-            token: ${{ secrets.CODECOV_TOKEN }}
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
+          fail_ci_if_error: true
