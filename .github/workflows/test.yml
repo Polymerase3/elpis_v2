@@ -41,7 +41,6 @@ jobs:
           python-version: 3.13
           requirements-path: requirements.txt
           readme-path: README.md
-          pylintrc-path: .pylintrc
           badge-text: PyLint
           color-bad-score: red
           color-ok-score: orange
