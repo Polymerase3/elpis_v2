@@ -44,8 +44,8 @@ jobs:
           badge-text: PyLint
           color-bad-score: red
           color-ok-score: orange
-          color-good-score: yellow
-          color-perfect-score: brightgreen
+          color-good-score: brightgreen
+          color-perfect-score: green
 
       # 4) Lint with flake8
       - name: Lint with flake8

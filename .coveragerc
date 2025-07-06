@@ -1,9 +1,13 @@
 [run]
-omit =
-    */tests/*
-    */__init__.py
+source =
+    src/elpis_nautilus
+    src/elpis_nautilus/data_downloaders
+    src/elpis_nautilus/crud
+    src/elpis_nautilus/utils
 
 [report]
-# Fail if coverage < 80%
-#fail_under = 80
+# show missing lines, exclude tests
 show_missing = True
+omit = 
+    src/tests/*
+    */__init__.py
