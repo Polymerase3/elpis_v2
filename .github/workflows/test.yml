@@ -41,8 +41,6 @@ jobs:
           python-version: 3.9
           readme-path: README.md
           pylintrc-path: .pylintrc
-          # disable the default requirements.txt install
-          requirements-path: ""
           badge-text: PyLint
           color-bad-score: red
           color-ok-score: orange
